@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Mon Spa</title>
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    background:linear-gradient(160deg,#0a2a3a 0%,#0e4258 50%,#13647e 100%);
+    color:#eaf6fa; min-height:100vh;
+    padding:env(safe-area-inset-top) 20px env(safe-area-inset-bottom);
+    display:flex; flex-direction:column; align-items:center;
+  }
+  .header { text-align:center; padding:30px 0 10px; }
+  .header h1 { font-size:26px; font-weight:600; letter-spacing:0.5px; }
+  .status { display:inline-flex; align-items:center; gap:7px; margin-top:8px; font-size:13px; opacity:0.85; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#ff5b5b; transition:0.3s; }
+  .dot.online { background:#34e0a1; box-shadow:0 0 10px #34e0a1; }
+  .temp-card {
+    background:rgba(255,255,255,0.08); backdrop-filter:blur(12px);
+    border-radius:30px; padding:35px 30px; margin:20px 0; width:100%; max-width:380px;
+    text-align:center; border:1px solid rgba(255,255,255,0.12);
+  }
+  .temp-label { font-size:14px; opacity:0.7; text-transform:uppercase; letter-spacing:1px; }
+  .temp-value { font-size:72px; font-weight:200; margin:5px 0; }
+  .temp-value span { font-size:32px; opacity:0.6; }
+  .setpoint { margin-top:20px; display:flex; align-items:center; justify-content:center; gap:20px; }
+  .setpoint-info { font-size:13px; opacity:0.7; }
+  .setpoint-val { font-size:24px; font-weight:500; }
+  .btn-round {
+    width:54px; height:54px; border-radius:50%; border:none;
+    background:rgba(255,255,255,0.15); color:#fff; font-size:28px;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    transition:0.15s; user-select:none;
+  }
+  .btn-round:active { transform:scale(0.9); background:rgba(52,224,161,0.4); }
+  .controls { width:100%; max-width:380px; display:flex; flex-direction:column; gap:14px; }
+  .control-row {
+    background:rgba(255,255,255,0.08); backdrop-filter:blur(12px);
+    border-radius:20px; padding:18px 22px; display:flex; align-items:center;
+    justify-content:space-between; border:1px solid rgba(255,255,255,0.12);
+  }
+  .control-label { font-size:17px; font-weight:500; }
+  .control-sub { font-size:12px; opacity:0.55; margin-top:2px; }
+  .toggle { width:58px; height:32px; border-radius:20px; background:rgba(255,255,255,0.2); position:relative; cursor:pointer; transition:0.25s; }
+  .toggle.on { background:#34e0a1; }
+  .toggle .knob { width:26px; height:26px; border-radius:50%; background:#fff; position:absolute; top:3px; left:3px; transition:0.25s; box-shadow:0 2px 5px rgba(0,0,0,0.3); }
+  .toggle.on .knob { left:29px; }
+  .footer { margin:25px 0 15px; font-size:11px; opacity:0.4; text-align:center; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>🌊 Mon Spa</h1>
+    <div class="status"><span class="dot" id="statusDot"></span><span id="statusText">Connexion…</span></div>
+  </div>
+
+  <div class="temp-card">
+    <div class="temp-label">Température de l'eau</div>
+    <div class="temp-value"><span id="tempAct">--</span><span>°C</span></div>
+    <div class="setpoint">
+      <button class="btn-round" onclick="changeTemp(-1)">−</button>
+      <div>
+        <div class="setpoint-info">Consigne</div>
+        <div class="setpoint-val"><span id="tempSet">--</span>°C</div>
+      </div>
+      <button class="btn-round" onclick="changeTemp(1)">+</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="control-row">
+      <div><div class="control-label">Filtration</div><div class="control-sub">Pompe de circulation</div></div>
+      <div class="toggle" id="tgFilter" onclick="toggle('filter')"><div class="knob"></div></div>
+    </div>
+    <div class="control-row">
+      <div><div class="control-label">Chauffage</div><div class="control-sub">Réchauffeur</div></div>
+      <div class="toggle" id="tgHeater" onclick="toggle('heater')"><div class="knob"></div></div>
+    </div>
+    <div class="control-row">
+      <div><div class="control-label">Bulles</div><div class="control-sub">Jets à air</div></div>
+      <div class="toggle" id="tgBubble" onclick="toggle('bubble')"><div class="knob"></div></div>
+    </div>
+  </div>
+
+  <div class="footer">Intex PureSpa SB-H20 · MQTT</div>
+
+<script>
+  const HOST = "wss://b56618d119044d198af6519855906c83.s1.eu.hivemq.cloud:8884/mqtt";
+  const OPTS = { username:"pilote33600", password:"PiperPA18" };
+
+  const state = { tempSet: null, filter:false, heater:false, bubble:false };
+  let client;
+
+  function connect() {
+    client = mqtt.connect(HOST, OPTS);
+    client.on("connect", () => {
+      setStatus(true);
+      client.subscribe("pool/#");
+    });
+    client.on("close", () => setStatus(false));
+    client.on("error", () => setStatus(false));
+    client.on("message", (topic, payload) => {
+      const v = payload.toString();
+      if (topic === "pool/water/tempAct") document.getElementById("tempAct").textContent = v;
+      if (topic === "pool/water/tempSet") { state.tempSet = parseInt(v); document.getElementById("tempSet").textContent = v; }
+      if (topic === "pool/filter") setToggle("tgFilter","filter", v==="on");
+      if (topic === "pool/heater") setToggle("tgHeater","heater", v!=="off");
+      if (topic === "pool/bubble") setToggle("tgBubble","bubble", v==="on");
+    });
+  }
+
+  function setStatus(on) {
+    document.getElementById("statusDot").className = on ? "dot online" : "dot";
+    document.getElementById("statusText").textContent = on ? "En ligne" : "Hors ligne";
+  }
+  function setToggle(id, key, on) {
+    state[key] = on;
+    document.getElementById(id).className = on ? "toggle on" : "toggle";
+  }
+  function toggle(key) {
+    const map = { filter:"tgFilter", heater:"tgHeater", bubble:"tgBubble" };
+    const next = !state[key] ? "on" : "off";
+    client.publish("pool/command/" + key, next);
+  }
+  function changeTemp(delta) {
+    if (state.tempSet === null) return;
+    const nv = Math.min(40, Math.max(20, state.tempSet + delta));
+    client.publish("pool/command/water/tempSet", String(nv));
+  }
+
+  connect();
+</script>
+</body>
+</html>
